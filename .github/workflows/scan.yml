@@ -1,0 +1,235 @@
+name: Nightly CVE Scan
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 02:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to scan (default: latest)'
+        required: false
+        default: 'latest'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      security-events: write  # for uploading SARIF results
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image reference
+        id: image
+        run: |
+          TAG=${{ github.event.inputs.image_tag || 'latest' }}
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          echo "ref=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          # Pull and capture the exact digest
+          docker pull "${IMAGE}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}" | cut -d@ -f2)
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # ── Grype ────────────────────────────────────────────────────────────────
+
+      - name: Install grype (latest)
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Update grype DB
+        run: grype db update
+
+      - name: Grype DB version
+        id: grype_db
+        run: |
+          VERSION=$(grype db status --output json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('built','unknown'))" 2>/dev/null || echo "unknown")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Run grype scan
+        id: grype
+        run: |
+          grype "${{ steps.image.outputs.ref }}" \
+            --output json \
+            --file grype-results.json \
+            --add-cpes-if-none \
+            || true  # don't fail here — we evaluate severity ourselves
+
+      # ── Trivy ────────────────────────────────────────────────────────────────
+
+      - name: Install trivy (latest)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Update trivy DB
+        run: trivy image --download-db-only --no-progress
+
+      - name: Trivy DB version
+        id: trivy_db
+        run: |
+          VERSION=$(trivy version --format json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('VulnerabilityDB',{}).get('UpdatedAt','unknown'))" 2>/dev/null || echo "unknown")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Run trivy scan
+        id: trivy
+        run: |
+          trivy image \
+            --format json \
+            --output trivy-results.json \
+            --no-progress \
+            --ignore-unfixed=false \
+            "${{ steps.image.outputs.ref }}" \
+            || true
+
+      # ── Build summary ─────────────────────────────────────────────────────────
+
+      - name: Build workflow summary
+        id: summary
+        run: |
+          python3 << 'EOF'
+          import json, os, sys
+
+          def severity_order(s):
+              return {"critical": 0, "high": 1, "medium": 2, "low": 3, "negligible": 4, "unknown": 5}.get(s.lower(), 5)
+
+          def cve_link(cve_id):
+              if cve_id and cve_id.startswith("CVE-"):
+                  return f"[{cve_id}](https://nvd.nist.gov/vuln/detail/{cve_id})"
+              return cve_id or "—"
+
+          def severity_badge(s):
+              colors = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵", "negligible": "⚪", "unknown": "⚫"}
+              return f"{colors.get(s.lower(), '⚫')} {s.upper()}"
+
+          # ── Parse grype results ──
+          grype_findings = []
+          try:
+              with open("grype-results.json") as f:
+                  data = json.load(f)
+              for m in data.get("matches", []):
+                  vuln = m.get("vulnerability", {})
+                  artifact = m.get("artifact", {})
+                  cve_id = vuln.get("id", "")
+                  severity = vuln.get("severity", "unknown")
+                  pkg = artifact.get("name", "")
+                  installed = artifact.get("version", "")
+                  fixed = ""
+                  for fix in vuln.get("fix", {}).get("versions", []):
+                      fixed = fix
+                      break
+                  urls = vuln.get("urls", [])
+                  link = next((u for u in urls if "nvd.nist.gov" in u or "cve.org" in u), urls[0] if urls else "")
+                  ref = f"[{cve_id}]({link})" if link else cve_id
+                  grype_findings.append({"severity": severity, "pkg": pkg, "installed": installed, "fixed": fixed or "—", "ref": ref})
+          except Exception as e:
+              print(f"Warning: could not parse grype results: {e}", file=sys.stderr)
+
+          grype_findings.sort(key=lambda x: severity_order(x["severity"]))
+
+          # ── Parse trivy results ──
+          trivy_findings = []
+          try:
+              with open("trivy-results.json") as f:
+                  data = json.load(f)
+              for result in data.get("Results", []):
+                  for vuln in result.get("Vulnerabilities") or []:
+                      cve_id = vuln.get("VulnerabilityID", "")
+                      severity = vuln.get("Severity", "unknown")
+                      pkg = vuln.get("PkgName", "")
+                      installed = vuln.get("InstalledVersion", "")
+                      fixed = vuln.get("FixedVersion", "—") or "—"
+                      refs = vuln.get("References", [])
+                      link = next((r for r in refs if "nvd.nist.gov" in r or "cve.org" in r), refs[0] if refs else "")
+                      ref = f"[{cve_id}]({link})" if link else cve_id
+                      trivy_findings.append({"severity": severity, "pkg": pkg, "installed": installed, "fixed": fixed, "ref": ref})
+          except Exception as e:
+              print(f"Warning: could not parse trivy results: {e}", file=sys.stderr)
+
+          trivy_findings.sort(key=lambda x: severity_order(x["severity"]))
+
+          # ── Count critical/high ──
+          grype_critical_high = sum(1 for f in grype_findings if f["severity"].lower() in ("critical", "high"))
+          trivy_critical_high = sum(1 for f in trivy_findings if f["severity"].lower() in ("critical", "high"))
+          has_critical_high = grype_critical_high > 0 or trivy_critical_high > 0
+
+          # ── Write summary ──
+          image_ref  = os.environ["IMAGE_REF"]
+          digest     = os.environ["IMAGE_DIGEST"]
+          grype_db   = os.environ["GRYPE_DB_VERSION"]
+          trivy_db   = os.environ["TRIVY_DB_VERSION"]
+
+          lines = []
+          lines.append("# CVE Scan Results\n")
+          lines.append("## Scanned image\n")
+          lines.append(f"| | |")
+          lines.append(f"|---|---|")
+          lines.append(f"| **Image** | `{image_ref}` |")
+          lines.append(f"| **Digest** | `{digest}` |")
+          lines.append(f"| **Grype DB built** | `{grype_db}` |")
+          lines.append(f"| **Trivy DB updated** | `{trivy_db}` |")
+          lines.append("")
+
+          if has_critical_high:
+              lines.append(f"> ⚠️ **{grype_critical_high + trivy_critical_high} CRITICAL/HIGH findings** across both scanners — see tables below.\n")
+
+          def findings_table(findings, scanner):
+              lines = []
+              lines.append(f"## {scanner} — {len(findings)} finding(s)\n")
+              if not findings:
+                  lines.append("✅ No vulnerabilities found.\n")
+                  return lines
+              lines.append("| Severity | Package | Installed | Fixed | CVE |")
+              lines.append("|---|---|---|---|---|")
+              for f in findings:
+                  lines.append(f"| {severity_badge(f['severity'])} | `{f['pkg']}` | `{f['installed']}` | `{f['fixed']}` | {f['ref']} |")
+              lines.append("")
+              return lines
+
+          lines += findings_table(grype_findings, "Grype")
+          lines += findings_table(trivy_findings, "Trivy")
+
+          summary = "\n".join(lines)
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(summary)
+
+          # Signal failure if critical/high found
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"has_critical_high={'true' if has_critical_high else 'false'}\n")
+
+          EOF
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          GRYPE_DB_VERSION: ${{ steps.grype_db.outputs.version }}
+          TRIVY_DB_VERSION: ${{ steps.trivy_db.outputs.version }}
+
+      - name: Upload grype SARIF
+        if: always()
+        continue-on-error: true
+        run: |
+          grype "${{ steps.image.outputs.ref }}" --output sarif --file grype.sarif || true
+
+      - name: Upload grype SARIF to GitHub Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: grype.sarif
+          category: grype
+
+      - name: Fail if critical or high findings
+        if: steps.summary.outputs.has_critical_high == 'true'
+        run: |
+          echo "Critical or high severity CVEs found. See workflow summary for details."
+          exit 1
