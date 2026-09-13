@@ -1,0 +1,71 @@
+services:
+  netbox: &netbox
+    build:
+      context: .
+      args:
+        NETBOX_VERSION: ${NETBOX_VERSION:-4.7.0}
+    image: netbox-chainguard:${NETBOX_VERSION:-4.7.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: env/netbox.env
+    user: "65532:0"
+    healthcheck:
+      test: ["CMD", "/opt/netbox/venv/bin/python", "/opt/netbox/health.py"]
+      start_period: 300s
+      timeout: 5s
+      interval: 15s
+      retries: 5
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configuration:/etc/netbox/config:ro
+      - netbox-media:/opt/netbox/netbox/media:rw
+      - netbox-reports:/opt/netbox/netbox/reports:rw
+      - netbox-scripts:/opt/netbox/netbox/scripts:rw
+
+  netbox-worker:
+    <<: *netbox
+    ports: []
+    depends_on:
+      netbox:
+        condition: service_healthy
+    command:
+      - /opt/netbox/venv/bin/python
+      - /opt/netbox/netbox/manage.py
+      - rqworker
+    healthcheck:
+      test: ["CMD", "/opt/netbox/venv/bin/python", "-c", "import subprocess,sys; sys.exit(0 if any('rqworker' in p for p in subprocess.check_output(['ps','aux']).decode().splitlines()) else 1)"]
+      start_period: 20s
+      timeout: 3s
+      interval: 15s
+
+  postgres:
+    image: docker.io/postgres:17-alpine
+    env_file: env/postgres.env
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER"]
+      start_period: 20s
+      timeout: 10s
+      interval: 10s
+      retries: 5
+    volumes:
+      - netbox-postgres:/var/lib/postgresql/data
+
+  redis:
+    image: docker.io/valkey/valkey:8-alpine
+    command: valkey-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli --pass \"${REDIS_PASSWORD:-changeme}\" ping | grep -q PONG"]
+      start_period: 5s
+      timeout: 3s
+      interval: 5s
+      retries: 5
+
+volumes:
+  netbox-media:
+  netbox-reports:
+  netbox-scripts:
+  netbox-postgres:
