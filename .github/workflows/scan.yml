@@ -32,9 +32,12 @@ jobs:
 
       - name: Resolve image reference
         id: image
+        env:
+          TAG: ${{ github.event.inputs.image_tag || 'latest' }}
         run: |
-          TAG=${{ github.event.inputs.image_tag || 'latest' }}
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          # Container repository names must be lowercase; tags retain their case.
+          IMAGE_REPOSITORY=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="${REGISTRY}/${IMAGE_REPOSITORY}:${TAG}"
           echo "ref=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           # Pull and capture the exact digest
