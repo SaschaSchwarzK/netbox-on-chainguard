@@ -1,0 +1,148 @@
+name: Autopatch Vulnerable Images
+
+on:
+  workflow_run:
+    workflows: [Nightly CVE Scan]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: netbox-autopatch
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  matrix:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.matrix.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: matrix
+        run: |
+          echo "versions=$(jq -c '{include: [.versions[] | {version: .version, current_revision: .revision, next_revision: (.revision + 1)}]}' versions.json)" >> "$GITHUB_OUTPUT"
+
+  patch-and-verify:
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install scanners
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+      - name: Scan currently released image
+        env:
+          CURRENT_TAG: ${{ matrix.version }}-r${{ matrix.current_revision }}
+        run: |
+          repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${repository}:${CURRENT_TAG}"
+          grype "$image" -o json --file before-grype.json || test -s before-grype.json || echo '{"matches":[]}' > before-grype.json
+          trivy image --format json --output before-trivy.json --no-progress "$image" || test -s before-trivy.json || echo '{"Results":[]}' > before-trivy.json
+      - name: Raise fixable vulnerable Python dependency floors
+        run: python scripts/update_security_overrides.py before-grype.json "security-requirements/${{ matrix.version }}.txt"
+      - name: Rebuild from current Chainguard packages and Python constraints
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          pull: true
+          load: true
+          tags: autopatch:${{ matrix.version }}-r${{ matrix.next_revision }}
+          build-args: NETBOX_VERSION=${{ matrix.version }}
+          cache-from: type=gha,scope=netbox-${{ matrix.version }}
+      - name: Scan candidate and create vulnerability delta
+        id: candidate
+        env:
+          CANDIDATE_TAG: ${{ matrix.version }}-r${{ matrix.next_revision }}
+        run: |
+          mkdir -p autopatch-result
+          grype "autopatch:${CANDIDATE_TAG}" -o json --file after-grype.json || true
+          trivy image --format json --output after-trivy.json --no-progress "autopatch:${CANDIDATE_TAG}" || true
+          if python scripts/security_report.py report \
+            --before before-grype.json before-trivy.json \
+            --after after-grype.json after-trivy.json \
+            --image "${REGISTRY}/${IMAGE_NAME}:${CANDIDATE_TAG}" \
+            --output "autopatch-result/${CANDIDATE_TAG}.md"; then
+            touch "autopatch-result/${{ matrix.version }}.clean"
+          fi
+          cp "security-requirements/${{ matrix.version }}.txt" "autopatch-result/${{ matrix.version }}.requirements.txt"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: autopatch-${{ matrix.version }}
+          path: autopatch-result/
+
+  propose:
+    if: always() && needs.matrix.result == 'success'
+    needs: [matrix, patch-and-verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      AUTOPATCH_TOKEN: ${{ secrets.AUTOPATCH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: autopatch-*
+          path: autopatch-result
+          merge-multiple: true
+      - name: Promote clean candidates
+        id: promote
+        run: |
+          versions=$(python scripts/promote_clean_builds.py versions.json autopatch-result)
+          echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+          mkdir -p security-reports
+          for marker in autopatch-result/*.clean; do
+            [ -e "$marker" ] || continue
+            version=$(basename "$marker" .clean)
+            revision=$(jq -r --arg version "$version" '.versions[] | select(.version == $version) | .revision' versions.json)
+            cp "autopatch-result/${version}-r${revision}.md" "security-reports/${version}-r${revision}.md"
+            cp "autopatch-result/${version}.requirements.txt" "security-requirements/${version}.txt"
+          done
+          {
+            echo "This automated update rebuilds NetBox images from the current Chainguard base and the newest allowed Python dependencies."
+            echo
+            echo "Promoted versions: ${versions:-none}"
+            echo
+            for report in autopatch-result/*.md; do [ -e "$report" ] && cat "$report" && echo; done
+          } > /tmp/autopatch-pr.md
+      - name: Create or update autopatch PR
+        if: steps.promote.outputs.versions != ''
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ env.AUTOPATCH_TOKEN || github.token }}
+          branch: automation/netbox-autopatch
+          delete-branch: true
+          commit-message: "chore: release patched NetBox image revisions"
+          title: "chore: release patched NetBox image revisions"
+          body-path: /tmp/autopatch-pr.md
+          labels: security,automated
+      - name: Approve with separate automation identity
+        if: steps.pr.outputs.pull-request-number != '' && env.AUTOPATCH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr review "${{ steps.pr.outputs.pull-request-number }}" --approve
+      - name: Enable automatic merge
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ env.AUTOPATCH_TOKEN || github.token }}
+        run: gh pr merge "${{ steps.pr.outputs.pull-request-number }}" --auto --squash
