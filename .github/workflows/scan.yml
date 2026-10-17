@@ -88,7 +88,9 @@ jobs:
     env:
       AUTOPATCH_TOKEN: ${{ secrets.AUTOPATCH_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      # checkout@v6 credential storage can leave create-pull-request unable to
+      # authenticate its git push. Keep v5 in jobs that create PR branches.
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
           pattern: scan-report-*
