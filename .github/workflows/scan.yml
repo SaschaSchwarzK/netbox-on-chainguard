@@ -50,6 +50,23 @@ jobs:
         run: |
           grype "${{ steps.image.outputs.ref }}" -o json --file grype.json || true
           trivy image --format json --output trivy.json --no-progress "${{ steps.image.outputs.ref }}" || true
+      - name: Generate current vulnerability report
+        run: |
+          echo '{"matches":[]}' > empty-grype.json
+          echo '{"Results":[]}' > empty-trivy.json
+          mkdir -p scan-report
+          python scripts/security_report.py report \
+            --before empty-grype.json empty-trivy.json \
+            --after grype.json trivy.json \
+            --image "${{ steps.image.outputs.ref }}" \
+            --output "scan-report/${{ matrix.tag }}.md" || true
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: scan-report-${{ matrix.tag }}
+          path: scan-report/
+      - name: Enforce critical/high policy
+        run: |
           python scripts/security_report.py check grype.json trivy.json
       - name: Create SARIF
         if: always()
@@ -60,3 +77,46 @@ jobs:
         with:
           sarif_file: grype.sarif
           category: grype-${{ matrix.tag }}
+
+  update-readme:
+    if: always() && needs.matrix.result == 'success'
+    needs: [matrix, scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      AUTOPATCH_TOKEN: ${{ secrets.AUTOPATCH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: scan-report-*
+          path: scan-reports
+          merge-multiple: true
+      - name: Update released-image CVE table
+        run: python scripts/update_readme_images.py README.md versions.json scan-reports "$GITHUB_REPOSITORY"
+      - name: Create or update README PR
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ env.AUTOPATCH_TOKEN || github.token }}
+          branch: automation/update-image-cve-table
+          delete-branch: true
+          commit-message: "docs: update released image CVE table"
+          title: "docs: update released image CVE table"
+          body: |
+            Updates the released-image table from the latest nightly Grype and Trivy matrix scan.
+
+            This is a documentation-only update and does not publish or revise any image.
+          labels: security,automated,documentation
+      - name: Approve with GitHub Actions identity
+        if: steps.pr.outputs.pull-request-number != '' && env.AUTOPATCH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr review "${{ steps.pr.outputs.pull-request-number }}" --approve
+      - name: Enable automatic merge
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ env.AUTOPATCH_TOKEN || github.token }}
+        run: gh pr merge "${{ steps.pr.outputs.pull-request-number }}" --auto --squash
