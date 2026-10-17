@@ -64,8 +64,10 @@ jobs:
           image="${REGISTRY}/${repository}:${CURRENT_TAG}"
           grype "$image" -o json --file before-grype.json || test -s before-grype.json || echo '{"matches":[]}' > before-grype.json
           trivy image --format json --output before-trivy.json --no-progress "$image" || test -s before-trivy.json || echo '{"Results":[]}' > before-trivy.json
-      - name: Raise fixable vulnerable Python dependency floors
-        run: python scripts/update_security_overrides.py before-grype.json "security-requirements/${{ matrix.version }}.txt"
+      - name: Raise all fixable vulnerable Python dependency floors
+        run: >-
+          python scripts/update_security_overrides.py before-grype.json before-trivy.json
+          "security-requirements/${{ matrix.version }}.txt"
       - name: Rebuild from current Chainguard packages and Python constraints
         uses: docker/build-push-action@v6
         with:
