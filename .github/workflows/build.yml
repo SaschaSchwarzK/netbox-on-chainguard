@@ -1,96 +1,100 @@
-name: Build NetBox Image
+name: Build and Release NetBox Images
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    paths: [versions.json]
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      netbox_version:
-        description: 'NetBox version (e.g. 4.7.0)'
-        required: true
-        default: '4.7.0'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  resolve-version:
+  matrix:
     runs-on: ubuntu-latest
     outputs:
-      netbox_version: ${{ steps.version.outputs.version }}
+      versions: ${{ steps.matrix.outputs.versions }}
+      latest: ${{ steps.matrix.outputs.latest }}
     steps:
-      - name: Determine NetBox version
-        id: version
+      - uses: actions/checkout@v6
+      - id: matrix
         run: |
-          if [ -n "${{ github.event.inputs.netbox_version }}" ]; then
-            echo "version=${{ github.event.inputs.netbox_version }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            VERSION=$(curl -sf https://api.github.com/repos/netbox-community/netbox/releases/latest \
-              | jq -r '.tag_name | ltrimstr("v")')
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "versions=$(jq -c '{include: [.versions[] | {netbox_version: .version, revision: .revision, image_tag: (.version + "-r" + (.revision | tostring))}]}' versions.json)" >> "$GITHUB_OUTPUT"
+          echo "latest=$(jq -r '.versions[-1].version' versions.json)" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: resolve-version
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.versions) }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
-      id-token: write  # required for keyless cosign signing
-
+      id-token: write
     steps:
-      - name: Install cosign
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
+      - name: Install cosign
+        if: github.event_name == 'push'
+        uses: sigstore/cosign-installer@v3
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ needs.resolve-version.outputs.netbox_version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
+            type=raw,value=${{ matrix.image_tag }}
+            type=raw,value=${{ matrix.netbox_version }}
+            type=raw,value=latest,enable=${{ matrix.netbox_version == needs.matrix.outputs.latest }}
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          pull: true
+          # Only a catalog revision committed to main may publish immutable tags.
+          push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            NETBOX_VERSION=${{ needs.resolve-version.outputs.netbox_version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: NETBOX_VERSION=${{ matrix.netbox_version }}
+          cache-from: type=gha,scope=netbox-${{ matrix.netbox_version }}
+          cache-to: type=gha,mode=max,scope=netbox-${{ matrix.netbox_version }}
           provenance: true
           sbom: true
-
-      - name: Sign image
-        if: github.event_name != 'pull_request'
+      - name: Sign immutable image tag
+        if: github.event_name == 'push'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
         run: |
-          echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+          repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          cosign sign --yes "${REGISTRY}/${repository}:${IMAGE_TAG}@${DIGEST}"
+      - name: Create image-only GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
+          NETBOX_VERSION: ${{ matrix.netbox_version }}
+        run: |
+          repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          report="security-reports/${IMAGE_TAG}.md"
+          notes=$(mktemp)
+          {
+            echo "# NetBox ${NETBOX_VERSION} container revision ${IMAGE_TAG}"
+            echo
+            echo "Image: \`${REGISTRY}/${repository}:${IMAGE_TAG}\`"
+            echo
+            if [ -f "$report" ]; then cat "$report"; else echo "No vulnerability delta report was generated."; fi
+          } > "$notes"
+          gh release create "v${IMAGE_TAG}" --title "NetBox ${IMAGE_TAG}" --notes-file "$notes" --target "$GITHUB_SHA" || gh release edit "v${IMAGE_TAG}" --notes-file "$notes"

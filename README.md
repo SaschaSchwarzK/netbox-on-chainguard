@@ -2,7 +2,27 @@
 
 CVE-clean NetBox Docker images built on [Chainguard Python](https://images.chainguard.dev/directory/image/python/overview).
 
-Supports NetBox ≥ 4.6. Uses [granian](https://github.com/emmett-framework/granian) (WSGI/uvloop) instead of gunicorn.
+Supports the NetBox releases listed in [`versions.json`](versions.json). Uses [granian](https://github.com/emmett-framework/granian) (WSGI/uvloop) instead of gunicorn.
+
+## Image versions
+
+Each image has an immutable downstream revision tag such as `4.6.8-r2` or
+`4.7.2-r0`. The revision is incremented whenever that NetBox release is rebuilt
+with a patched base image or dependency set. Moving convenience tags such as
+`4.7.2` point to the newest revision; `latest` points to the newest configured
+NetBox release.
+
+`versions.json` is the single editable build matrix. Add a new entry at the end
+when NetBox publishes a release, or remove an entry when it is no longer
+supported:
+
+```json
+{"version": "4.7.3", "revision": 0}
+```
+
+Every version also has a matching file in `security-requirements/`. These
+overrides replace vulnerable upstream pins while retaining the dependency
+release line supported by that NetBox version.
 
 ## Build arguments
 
@@ -36,17 +56,37 @@ Default credentials (dev only — change in `env/netbox.env`): `admin` / `admin`
 
 The workflow in `.github/workflows/build.yml`:
 
-- Triggers on push to `main`, version tags (`v*`), PRs, and manual dispatch
-- Automatically resolves the latest Chainguard digest at build time
-- Accepts `netbox_version` as a manual input
-- Pushes to GHCR with version tag and `latest` (on `main`)
+- Builds the editable matrix in `versions.json`
+- Resolves the latest Chainguard digest at build time
+- Pushes immutable `VERSION-rN` and moving `VERSION` tags to GHCR
+- Updates `latest` for the newest configured NetBox release
 - Generates SBOM and provenance attestations
 - Signs the image with [Cosign](https://github.com/sigstore/cosign) keyless signing (Sigstore)
+- Creates an image-only GitHub release whose notes include the vulnerability delta
+
+The nightly scan checks every immutable matrix tag. If any scan fails, the
+autopatch workflow rebuilds every version with current Chainguard packages and
+the newest allowed Python dependencies, scans each candidate with Grype and
+Trivy, and creates a PR containing:
+
+- incremented revisions for clean candidates;
+- per-image reports listing resolved and remaining vulnerabilities;
+- the exact image tags that will be published after merge.
+
+Candidates with a critical or high vulnerability are not promoted. Merging the
+PR starts the signed image build and GitHub release jobs.
+
+For fully automatic approval and merge, configure repository Actions settings
+to allow GitHub Actions to create and approve pull requests, enable auto-merge,
+and add an `AUTOPATCH_TOKEN` secret from a bot or GitHub App identity with
+contents and pull-request write access. Using a separate identity allows the
+workflow's `GITHUB_TOKEN` to approve the bot-authored PR and ensures the PR and
+merge events trigger their normal workflows.
 
 To verify a pulled image:
 
 ```sh
-cosign verify ghcr.io/<org>/netbox-on-chainguard:4.7.0 \
+cosign verify ghcr.io/<org>/netbox-on-chainguard:4.7.0-r0 \
   --certificate-identity-regexp="https://github.com/<org>/netbox-on-chainguard" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```

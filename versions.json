@@ -1,0 +1,11 @@
+{
+  "versions": [
+    {"version": "4.6.8", "revision": 0},
+    {"version": "4.6.9", "revision": 0},
+    {"version": "4.6.10", "revision": 0},
+    {"version": "4.7.0", "revision": 0},
+    {"version": "4.7.1", "revision": 0},
+    {"version": "4.7.2", "revision": 0},
+    {"version": "4.7.3", "revision": 0}
+  ]
+}

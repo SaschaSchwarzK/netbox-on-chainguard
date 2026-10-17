@@ -24,11 +24,14 @@ RUN wget -qO- "https://github.com/netbox-community/netbox/archive/refs/tags/v${N
     | tar xz --strip-components=1
 
 COPY requirements-container.txt /requirements-container.txt
+COPY security-requirements/ /security-requirements/
+COPY scripts/apply_security_overrides.py /apply_security_overrides.py
 
 ENV VIRTUAL_ENV=/opt/netbox/venv
 RUN sed -i '/gunicorn/d' requirements.txt \
     && sed -i 's/social-auth-core/social-auth-core[all]/g' requirements.txt \
     && sed -i 's/django-storages/django-storages[azure,boto3,dropbox,google,libcloud,sftp]/g' requirements.txt \
+    && python /apply_security_overrides.py requirements.txt "/security-requirements/${NETBOX_VERSION}.txt" \
     && uv pip install \
          -r requirements.txt \
          -r /requirements-container.txt
