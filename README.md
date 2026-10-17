@@ -71,55 +71,6 @@ NetBox will be available at http://localhost:8080.
 
 Default credentials (dev only — change in `env/netbox.env`): `admin` / `admin`
 
-## GitHub Actions
-
-The workflow in `.github/workflows/build.yml`:
-
-- Builds the editable matrix in `versions.json`
-- Builds and scans every matrix entry on pull requests without publishing it
-- On `main`, runs only for new or incremented entries in `versions.json`
-- Resolves the latest Chainguard digest at build time
-- Blocks publication when Grype or Trivy reports a critical/high vulnerability
-- Pushes immutable `VERSION-rN` and moving `VERSION` tags to GHCR
-- Updates `latest` for the newest configured NetBox release
-- Generates SBOM and provenance attestations
-- Signs the image with [Cosign](https://github.com/sigstore/cosign) keyless signing (Sigstore)
-- Creates an image-only GitHub release whose notes list resolved and remaining vulnerabilities
-
-Documentation and workflow-only changes never publish an image. Changes to the
-Dockerfile, shared container requirements, or per-version security requirements
-start the autopatch workflow after they reach `main`. The autopatch workflow
-creates a revision-bump PR; publication happens only after that PR is merged.
-Manually dispatch the autopatch workflow to request the same guarded release
-flow on demand. Manually dispatching the build workflow performs validation only.
-
-The nightly scan checks every immutable matrix tag. If any scan fails, the
-autopatch workflow rebuilds every version with current Chainguard packages and
-the newest allowed Python dependencies, scans each candidate with Grype and
-Trivy, and creates a PR containing:
-
-- incremented revisions for clean candidates;
-- per-image reports listing resolved and remaining vulnerabilities;
-- the exact image tags that will be published after merge.
-
-Candidates with a critical or high vulnerability are not promoted. Merging the
-PR starts the signed image build and GitHub release jobs.
-
-For fully automatic approval and merge, configure repository Actions settings
-to allow GitHub Actions to create and approve pull requests, enable auto-merge,
-and add an `AUTOPATCH_TOKEN` secret from a bot or GitHub App identity with
-contents and pull-request write access. Using a separate identity allows the
-workflow's `GITHUB_TOKEN` to approve the bot-authored PR and ensures the PR and
-merge events trigger their normal workflows.
-
-To verify a pulled image:
-
-```sh
-cosign verify ghcr.io/<org>/netbox-on-chainguard:4.7.0-r0 \
-  --certificate-identity-regexp="https://github.com/<org>/netbox-on-chainguard" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
-```
-
 ## Security properties
 
 - Non-root UID 65532, GID 0 (root group, no root privileges)
