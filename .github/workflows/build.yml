@@ -1,4 +1,4 @@
-name: Build and Release NetBox Images
+name: Build, Verify, and Release NetBox Images
 
 on:
   push:
@@ -20,12 +20,26 @@ jobs:
       latest: ${{ steps.matrix.outputs.latest }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
       - id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          echo "versions=$(jq -c '{include: [.versions[] | {netbox_version: .version, revision: .revision, image_tag: (.version + "-r" + (.revision | tostring))}]}' versions.json)" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = push ]; then
+            git show HEAD^:versions.json > /tmp/previous-versions.json 2>/dev/null || echo '{"versions":[]}' > /tmp/previous-versions.json
+            matrix=$(jq -cn \
+              --argjson current "$(cat versions.json)" \
+              --argjson previous "$(cat /tmp/previous-versions.json)" \
+              '{include: [$current.versions[] as $version | select(any($previous.versions[]; .version == $version.version and .revision != $version.revision) or all($previous.versions[]; .version != $version.version)) | {netbox_version: $version.version, revision: $version.revision, image_tag: ($version.version + "-r" + ($version.revision | tostring))}]}' \
+            )
+          else
+            matrix=$(jq -c '{include: [.versions[] | {netbox_version: .version, revision: .revision, image_tag: (.version + "-r" + (.revision | tostring))}]}' versions.json)
+          fi
+          echo "versions=${matrix}" >> "$GITHUB_OUTPUT"
           echo "latest=$(jq -r '.versions[-1].version' versions.json)" >> "$GITHUB_OUTPUT"
 
-  build:
+  verify-and-release:
     needs: matrix
     strategy:
       fail-fast: false
@@ -35,6 +49,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      security-events: write
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
@@ -45,10 +60,57 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install cosign
-        if: github.event_name == 'push'
-        uses: sigstore/cosign-installer@v3
+      - name: Install scanners
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+      - name: Scan previous revision
+        env:
+          REVISION: ${{ matrix.revision }}
+          NETBOX_VERSION: ${{ matrix.netbox_version }}
+        run: |
+          if [ "$REVISION" -gt 0 ]; then
+            repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+            previous="${REGISTRY}/${repository}:${NETBOX_VERSION}-r$((REVISION - 1))"
+            grype "$previous" -o json --file before-grype.json || test -s before-grype.json || echo '{"matches":[]}' > before-grype.json
+            trivy image --format json --output before-trivy.json --no-progress "$previous" || test -s before-trivy.json || echo '{"Results":[]}' > before-trivy.json
+          else
+            echo '{"matches":[]}' > before-grype.json
+            echo '{"Results":[]}' > before-trivy.json
+          fi
+      - name: Build candidate locally
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          pull: true
+          load: true
+          tags: candidate:${{ matrix.image_tag }}
+          build-args: NETBOX_VERSION=${{ matrix.netbox_version }}
+          cache-from: type=gha,scope=netbox-${{ matrix.netbox_version }}
+          cache-to: type=gha,mode=max,scope=netbox-${{ matrix.netbox_version }}
+      - name: Scan candidate and generate release report
+        env:
+          IMAGE_TAG: ${{ matrix.image_tag }}
+        run: |
+          grype "candidate:${IMAGE_TAG}" -o json --file after-grype.json || true
+          trivy image --format json --output after-trivy.json --no-progress "candidate:${IMAGE_TAG}" || true
+          python scripts/security_report.py report \
+            --before before-grype.json before-trivy.json \
+            --after after-grype.json after-trivy.json \
+            --image "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            --output security-report.md
+          cat security-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Create SARIF
+        if: always()
+        run: grype "candidate:${{ matrix.image_tag }}" -o sarif --file grype.sarif || true
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('grype.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: grype.sarif
+          category: grype-${{ matrix.image_tag }}
       - name: Docker metadata
+        if: github.event_name == 'push'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -57,29 +119,55 @@ jobs:
             type=raw,value=${{ matrix.image_tag }}
             type=raw,value=${{ matrix.netbox_version }}
             type=raw,value=latest,enable=${{ matrix.netbox_version == needs.matrix.outputs.latest }}
-      - name: Build and push
-        id: build
+      - name: Publish verified image
+        if: github.event_name == 'push'
+        id: publish
         uses: docker/build-push-action@v6
         with:
           context: .
-          pull: true
-          # Only a catalog revision committed to main may publish immutable tags.
-          push: ${{ github.event_name == 'push' }}
+          pull: false
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: NETBOX_VERSION=${{ matrix.netbox_version }}
           cache-from: type=gha,scope=netbox-${{ matrix.netbox_version }}
-          cache-to: type=gha,mode=max,scope=netbox-${{ matrix.netbox_version }}
           provenance: true
           sbom: true
       - name: Sign immutable image tag
         if: github.event_name == 'push'
+        uses: sigstore/cosign-installer@v3
+      - name: Sign published image
+        if: github.event_name == 'push'
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
           IMAGE_TAG: ${{ matrix.image_tag }}
         run: |
           repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
           cosign sign --yes "${REGISTRY}/${repository}:${IMAGE_TAG}@${DIGEST}"
+      - name: Scan the published immutable image
+        if: github.event_name == 'push'
+        env:
+          IMAGE_TAG: ${{ matrix.image_tag }}
+        run: |
+          repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${repository}:${IMAGE_TAG}"
+          grype "$image" -o json --file published-grype.json || true
+          trivy image --format json --output published-trivy.json --no-progress "$image" || true
+          echo '{"matches":[]}' > empty-grype.json
+          echo '{"Results":[]}' > empty-trivy.json
+          mkdir -p released-image-report
+          python scripts/security_report.py report \
+            --before empty-grype.json empty-trivy.json \
+            --after published-grype.json published-trivy.json \
+            --image "$image" \
+            --output "released-image-report/${IMAGE_TAG}.md" || true
+      - name: Upload published-image vulnerability report
+        if: github.event_name == 'push' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: released-image-report-${{ matrix.image_tag }}
+          path: released-image-report/
+          if-no-files-found: error
       - name: Create image-only GitHub release
         if: github.event_name == 'push'
         env:
@@ -88,13 +176,57 @@ jobs:
           NETBOX_VERSION: ${{ matrix.netbox_version }}
         run: |
           repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
-          report="security-reports/${IMAGE_TAG}.md"
           notes=$(mktemp)
           {
             echo "# NetBox ${NETBOX_VERSION} container revision ${IMAGE_TAG}"
             echo
             echo "Image: \`${REGISTRY}/${repository}:${IMAGE_TAG}\`"
             echo
-            if [ -f "$report" ]; then cat "$report"; else echo "No vulnerability delta report was generated."; fi
+            cat security-report.md
           } > "$notes"
           gh release create "v${IMAGE_TAG}" --title "NetBox ${IMAGE_TAG}" --notes-file "$notes" --target "$GITHUB_SHA" || gh release edit "v${IMAGE_TAG}" --notes-file "$notes"
+
+  update-readme:
+    if: github.event_name == 'push' && needs.verify-and-release.result == 'success'
+    needs: [matrix, verify-and-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      AUTOPATCH_TOKEN: ${{ secrets.AUTOPATCH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: released-image-report-*
+          path: released-image-reports
+          merge-multiple: true
+      - name: Update released-image CVE table
+        run: >-
+          python scripts/update_readme_images.py README.md versions.json released-image-reports
+          "$GITHUB_REPOSITORY" --preserve-missing
+      - name: Create or update README PR
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ env.AUTOPATCH_TOKEN || github.token }}
+          branch: automation/update-image-cve-table
+          delete-branch: true
+          commit-message: "docs: update released image CVE table"
+          title: "docs: update released image CVE table"
+          body: |
+            Updates the released-image table from scans of the immutable images that were just published.
+
+            This is a documentation-only update and does not publish or revise any image.
+          labels: security,automated,documentation
+      - name: Approve with GitHub Actions identity
+        if: steps.pr.outputs.pull-request-number != '' && env.AUTOPATCH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr review "${{ steps.pr.outputs.pull-request-number }}" --approve
+      - name: Enable automatic merge
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ env.AUTOPATCH_TOKEN || github.token }}
+        run: gh pr merge "${{ steps.pr.outputs.pull-request-number }}" --auto --squash

@@ -24,6 +24,25 @@ Every version also has a matching file in `security-requirements/`. These
 overrides replace vulnerable upstream pins while retaining the dependency
 release line supported by that NetBox version.
 
+### Released images and current vulnerabilities
+
+This table is generated from Grype and Trivy scans of the published immutable
+images. It is refreshed immediately after a release and by the nightly scan. A
+clean release has no critical or high findings; medium and low findings remain
+visible here and in its release notes.
+
+<!-- released-images:start -->
+| NetBox | Image | Critical | High | Medium | Low | Current vulnerabilities |
+|---|---|---:|---:|---:|---:|---|
+| 4.7.3 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.3-r0` | — | — | — | — | Scan report unavailable |
+| 4.7.2 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.2-r0` | — | — | — | — | Scan report unavailable |
+| 4.7.1 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.1-r0` | — | — | — | — | Scan report unavailable |
+| 4.7.0 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.0-r0` | — | — | — | — | Scan report unavailable |
+| 4.6.10 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.10-r0` | — | — | — | — | Scan report unavailable |
+| 4.6.9 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.9-r0` | 0 | 0 | 2 | 0 | [GHSA-2m8g-3cmr-wg3w](https://github.com/advisories/GHSA-2m8g-3cmr-wg3w), [GHSA-g47c-3xmw-q6m2](https://github.com/advisories/GHSA-g47c-3xmw-q6m2) |
+| 4.6.8 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.8-r0` | — | — | — | — | Scan report unavailable |
+<!-- released-images:end -->
+
 ## Build arguments
 
 | Argument | Description | Example |
@@ -57,12 +76,22 @@ Default credentials (dev only — change in `env/netbox.env`): `admin` / `admin`
 The workflow in `.github/workflows/build.yml`:
 
 - Builds the editable matrix in `versions.json`
+- Builds and scans every matrix entry on pull requests without publishing it
+- On `main`, runs only for new or incremented entries in `versions.json`
 - Resolves the latest Chainguard digest at build time
+- Blocks publication when Grype or Trivy reports a critical/high vulnerability
 - Pushes immutable `VERSION-rN` and moving `VERSION` tags to GHCR
 - Updates `latest` for the newest configured NetBox release
 - Generates SBOM and provenance attestations
 - Signs the image with [Cosign](https://github.com/sigstore/cosign) keyless signing (Sigstore)
-- Creates an image-only GitHub release whose notes include the vulnerability delta
+- Creates an image-only GitHub release whose notes list resolved and remaining vulnerabilities
+
+Documentation and workflow-only changes never publish an image. Changes to the
+Dockerfile, shared container requirements, or per-version security requirements
+start the autopatch workflow after they reach `main`. The autopatch workflow
+creates a revision-bump PR; publication happens only after that PR is merged.
+Manually dispatch the autopatch workflow to request the same guarded release
+flow on demand. Manually dispatching the build workflow performs validation only.
 
 The nightly scan checks every immutable matrix tag. If any scan fails, the
 autopatch workflow rebuilds every version with current Chainguard packages and

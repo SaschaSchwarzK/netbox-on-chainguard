@@ -1,6 +1,12 @@
 name: Autopatch Vulnerable Images
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - requirements-container.txt
+      - security-requirements/**
   workflow_run:
     workflows: [Nightly CVE Scan]
     types: [completed]
@@ -16,7 +22,10 @@ env:
 
 jobs:
   matrix:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure') ||
+      (github.event_name == 'push' && !contains(github.event.head_commit.message, 'chore: release patched NetBox image revisions'))
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.matrix.outputs.versions }}
