@@ -4,3 +4,4 @@ PyJWT>=2.14.0
 social-auth-app-django>=6.0.0
 social-auth-core[all]>=5.0.0
 strawberry-graphql>=0.327.2
+djangorestframework>=3.17.2
