@@ -196,9 +196,7 @@ jobs:
     env:
       AUTOPATCH_TOKEN: ${{ secrets.AUTOPATCH_TOKEN }}
     steps:
-      # checkout@v6 credential storage can leave create-pull-request unable to
-      # authenticate its git push. Keep v5 in jobs that create PR branches.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v7
         with:
           pattern: released-image-report-*
@@ -213,6 +211,9 @@ jobs:
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ env.AUTOPATCH_TOKEN || github.token }}
+          # Use the job token explicitly for Git operations. This avoids relying
+          # on checkout's persisted credentials or the optional automation PAT.
+          branch-token: ${{ github.token }}
           branch: automation/update-image-cve-table
           delete-branch: true
           commit-message: "docs: update released image CVE table"
