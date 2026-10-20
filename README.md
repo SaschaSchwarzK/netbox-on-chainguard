@@ -34,13 +34,13 @@ visible here and in its release notes.
 <!-- released-images:start -->
 | NetBox | Image | Critical | High | Medium | Low | Current vulnerabilities |
 |---|---|---:|---:|---:|---:|---|
-| 4.7.3 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.3-r1` | 0 | 0 | 0 | 0 | ✅ None |
-| 4.7.2 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.2-r1` | 0 | 0 | 0 | 0 | ✅ None |
-| 4.7.1 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.1-r1` | 0 | 0 | 0 | 0 | ✅ None |
-| 4.7.0 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.0-r1` | 0 | 0 | 0 | 0 | ✅ None |
-| 4.6.10 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.10-r1` | 0 | 0 | 0 | 0 | ✅ None |
-| 4.6.9 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.9-r1` | 0 | 0 | 0 | 0 | ✅ None |
-| 4.6.8 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.8-r1` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.7.3 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.3-r2` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.7.2 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.2-r2` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.7.1 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.1-r2` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.7.0 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.7.0-r2` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.6.10 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.10-r2` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.6.9 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.9-r2` | 0 | 0 | 0 | 0 | ✅ None |
+| 4.6.8 | `ghcr.io/saschaschwarzk/netbox-on-chainguard:4.6.8-r2` | 0 | 0 | 0 | 0 | ✅ None |
 <!-- released-images:end -->
 
 ## Build arguments
