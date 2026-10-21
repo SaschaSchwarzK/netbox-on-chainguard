@@ -2,31 +2,31 @@
   "versions": [
     {
       "version": "4.6.8",
-      "revision": 2
+      "revision": 3
     },
     {
       "version": "4.6.9",
-      "revision": 2
+      "revision": 3
     },
     {
       "version": "4.6.10",
-      "revision": 2
+      "revision": 3
     },
     {
       "version": "4.7.0",
-      "revision": 2
+      "revision": 3
     },
     {
       "version": "4.7.1",
-      "revision": 2
+      "revision": 3
     },
     {
       "version": "4.7.2",
-      "revision": 2
+      "revision": 3
     },
     {
       "version": "4.7.3",
-      "revision": 2
+      "revision": 3
     }
   ]
 }
