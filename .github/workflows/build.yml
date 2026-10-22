@@ -92,8 +92,8 @@ jobs:
         env:
           IMAGE_TAG: ${{ matrix.image_tag }}
         run: |
-          grype "candidate:${IMAGE_TAG}" -o json --file after-grype.json || true
-          trivy image --format json --output after-trivy.json --no-progress "candidate:${IMAGE_TAG}" || true
+          grype "candidate:${IMAGE_TAG}" -o json --file after-grype.json
+          trivy image --format json --output after-trivy.json --no-progress "candidate:${IMAGE_TAG}"
           python scripts/security_report.py report \
             --before before-grype.json before-trivy.json \
             --after after-grype.json after-trivy.json \
@@ -151,8 +151,8 @@ jobs:
         run: |
           repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
           image="${REGISTRY}/${repository}:${IMAGE_TAG}"
-          grype "$image" -o json --file published-grype.json || true
-          trivy image --format json --output published-trivy.json --no-progress "$image" || true
+          grype "$image" -o json --file published-grype.json
+          trivy image --format json --output published-trivy.json --no-progress "$image"
           echo '{"matches":[]}' > empty-grype.json
           echo '{"Results":[]}' > empty-trivy.json
           mkdir -p released-image-report
