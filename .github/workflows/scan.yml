@@ -48,8 +48,8 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
       - name: Scan with Grype and Trivy
         run: |
-          grype "${{ steps.image.outputs.ref }}" -o json --file grype.json || true
-          trivy image --format json --output trivy.json --no-progress "${{ steps.image.outputs.ref }}" || true
+          grype "${{ steps.image.outputs.ref }}" -o json --file grype.json
+          trivy image --format json --output trivy.json --no-progress "${{ steps.image.outputs.ref }}"
       - name: Generate current vulnerability report
         run: |
           echo '{"matches":[]}' > empty-grype.json

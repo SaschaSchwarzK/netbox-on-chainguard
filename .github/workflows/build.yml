@@ -92,14 +92,16 @@ jobs:
         env:
           IMAGE_TAG: ${{ matrix.image_tag }}
         run: |
-          grype "candidate:${IMAGE_TAG}" -o json --file after-grype.json || true
-          trivy image --format json --output after-trivy.json --no-progress "candidate:${IMAGE_TAG}" || true
+          grype "candidate:${IMAGE_TAG}" -o json --file after-grype.json
+          trivy image --format json --output after-trivy.json --no-progress "candidate:${IMAGE_TAG}"
+          report_status=0
           python scripts/security_report.py report \
             --before before-grype.json before-trivy.json \
             --after after-grype.json after-trivy.json \
             --image "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" \
-            --output security-report.md
+            --output security-report.md || report_status=$?
           cat security-report.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$report_status"
       - name: Create SARIF
         if: always()
         run: grype "candidate:${{ matrix.image_tag }}" -o sarif --file grype.sarif || true
@@ -151,8 +153,8 @@ jobs:
         run: |
           repository=$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
           image="${REGISTRY}/${repository}:${IMAGE_TAG}"
-          grype "$image" -o json --file published-grype.json || true
-          trivy image --format json --output published-trivy.json --no-progress "$image" || true
+          grype "$image" -o json --file published-grype.json
+          trivy image --format json --output published-trivy.json --no-progress "$image"
           echo '{"matches":[]}' > empty-grype.json
           echo '{"Results":[]}' > empty-trivy.json
           mkdir -p released-image-report
