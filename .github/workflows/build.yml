@@ -170,8 +170,8 @@ jobs:
           name: released-image-report-${{ matrix.image_tag }}
           path: released-image-report/
           if-no-files-found: error
-      - name: Create image-only GitHub release
-        if: github.event_name == 'push'
+      - name: Create GitHub release for published image
+        if: github.event_name == 'push' && success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_TAG: ${{ matrix.image_tag }}
@@ -186,7 +186,11 @@ jobs:
             echo
             cat security-report.md
           } > "$notes"
-          gh release create "v${IMAGE_TAG}" --title "NetBox ${IMAGE_TAG}" --notes-file "$notes" --target "$GITHUB_SHA" || gh release edit "v${IMAGE_TAG}" --notes-file "$notes"
+          if gh release view "v${IMAGE_TAG}" >/dev/null 2>&1; then
+            gh release edit "v${IMAGE_TAG}" --title "NetBox ${IMAGE_TAG}" --notes-file "$notes"
+          else
+            gh release create "v${IMAGE_TAG}" --title "NetBox ${IMAGE_TAG}" --notes-file "$notes" --target "$GITHUB_SHA"
+          fi
 
   update-readme:
     if: github.event_name == 'push' && needs.verify-and-release.result == 'success'
