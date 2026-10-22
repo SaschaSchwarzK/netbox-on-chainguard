@@ -92,6 +92,14 @@ def table(title: str, rows: list[dict[str, str]]) -> list[str]:
     return lines + [""]
 
 
+def print_severe(rows: list[dict[str, str]]) -> None:
+    for row in rows:
+        print(
+            f"{row['severity']}: {row['id']} in {row['package']} "
+            f"{row['installed']} (fixed: {row['fixed']})"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -112,11 +120,7 @@ def main() -> int:
                 if row["severity"].lower() in {"critical", "high"}
             ]
             if severe:
-                for row in severe:
-                    print(
-                        f"{row['severity']}: {row['id']} in {row['package']} "
-                        f"{row['installed']} (fixed: {row['fixed']})"
-                    )
+                print_severe(severe)
                 return 1
             print("No critical or high vulnerabilities found.")
             return 0
@@ -142,6 +146,9 @@ def main() -> int:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(lines) + "\n")
+    if severe:
+        print_severe(severe)
+        print(f"Release blocked; full vulnerability report: {args.output}")
     return 1 if severe else 0
 
 

@@ -94,12 +94,14 @@ jobs:
         run: |
           grype "candidate:${IMAGE_TAG}" -o json --file after-grype.json
           trivy image --format json --output after-trivy.json --no-progress "candidate:${IMAGE_TAG}"
+          report_status=0
           python scripts/security_report.py report \
             --before before-grype.json before-trivy.json \
             --after after-grype.json after-trivy.json \
             --image "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" \
-            --output security-report.md
+            --output security-report.md || report_status=$?
           cat security-report.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$report_status"
       - name: Create SARIF
         if: always()
         run: grype "candidate:${{ matrix.image_tag }}" -o sarif --file grype.sarif || true
