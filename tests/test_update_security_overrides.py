@@ -91,8 +91,38 @@ class UpdateSecurityOverridesTest(unittest.TestCase):
 
             self.assertEqual(
                 requirements_path.read_text(),
-                "low-package>=1.1,<2\nmedium-package>=2.3\n",
+                "low-package>=1.1,<2\n",
             )
+
+    def test_adds_new_package_only_when_both_scanners_agree(self) -> None:
+        grype = {
+            "matches": [{
+                "artifact": {"name": "new_package", "type": "python"},
+                "vulnerability": {"fix": {"versions": ["2.0"]}},
+            }]
+        }
+        trivy = {
+            "Results": [{
+                "Type": "python-pkg",
+                "Vulnerabilities": [{
+                    "PkgName": "new-package", "FixedVersion": "2.1"
+                }],
+            }]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            grype_path = root / "grype.json"
+            trivy_path = root / "trivy.json"
+            requirements_path = root / "requirements.txt"
+            grype_path.write_text(json.dumps(grype))
+            trivy_path.write_text(json.dumps(trivy))
+            requirements_path.write_text("")
+            subprocess.run(
+                [sys.executable, str(SCRIPT), str(grype_path), str(trivy_path),
+                 str(requirements_path)],
+                check=True,
+            )
+            self.assertEqual(requirements_path.read_text(), "new-package>=2.1\n")
 
 
 if __name__ == "__main__":

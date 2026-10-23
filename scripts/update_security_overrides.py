@@ -27,19 +27,26 @@ lines = [
 positions = {
     name(line): index for index, line in enumerate(lines) if not line.startswith("#")
 }
-candidates: dict[str, tuple[str, str]] = {}
+candidates: dict[str, tuple[str, str, set[str]]] = {}
 
 
 def version_key(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", version)[:4])
+    parts = [int(part) for part in re.findall(r"\d+", version)[:4]]
+    return tuple(parts + [0] * (4 - len(parts)))
 
 
-def add_candidate(package: str, fixed: str) -> None:
+def add_candidate(package: str, fixed: str, source: str) -> None:
     package = package.replace("_", "-")
     key = package.lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", key):
+        return
     previous = candidates.get(key)
+    sources = set() if previous is None else previous[2]
+    sources.add(source)
     if previous is None or version_key(fixed) > version_key(previous[1]):
-        candidates[key] = (package, fixed)
+        candidates[key] = (package, fixed, sources)
+    else:
+        candidates[key] = (previous[0], previous[1], sources)
 
 
 for scan_path in scan_paths:
@@ -51,7 +58,7 @@ for scan_path in scan_paths:
             continue
         fixes = vulnerability.get("fix", {}).get("versions", [])
         if fixes:
-            add_candidate(artifact.get("name", ""), fixes[0])
+            add_candidate(artifact.get("name", ""), fixes[0], "grype")
 
     for result in data.get("Results", []):  # Trivy
         result_type = result.get("Type", "").lower()
@@ -61,10 +68,17 @@ for scan_path in scan_paths:
             fixed = vulnerability.get("FixedVersion")
             if fixed:
                 add_candidate(
-                    vulnerability.get("PkgName", ""), fixed.split(",")[0].strip()
+                    vulnerability.get("PkgName", ""),
+                    fixed.split(",")[0].strip(),
+                    "trivy",
                 )
 
-for key, (package, fixed) in candidates.items():
+for key, (package, fixed, sources) in candidates.items():
+    # A single scanner can occasionally emit a malformed package name. Existing
+    # overrides may be raised from either scanner, but a new override must be
+    # corroborated by both before it becomes repository state.
+    if key not in positions and sources != {"grype", "trivy"}:
+        continue
     upper = ""
     extras = ""
     if key in positions:

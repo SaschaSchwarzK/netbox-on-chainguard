@@ -124,6 +124,17 @@ jobs:
       - name: Promote clean candidates
         id: promote
         run: |
+          for marker in autopatch-result/*-r*.clean; do
+            [ -e "$marker" ] || continue
+            candidate=$(basename "$marker" .clean)
+            version=${candidate%-r*}
+            if ! python scripts/validate_security_overrides.py \
+              "security-requirements/${version}.txt" \
+              "autopatch-result/${version}.requirements.txt"; then
+              echo "Rejecting ${candidate}: security overrides are not monotonic" >&2
+              rm "$marker"
+            fi
+          done
           versions=$(python scripts/promote_clean_builds.py versions.json autopatch-result)
           echo "versions=${versions}" >> "$GITHUB_OUTPUT"
           mkdir -p security-reports
@@ -155,13 +166,3 @@ jobs:
           title: "chore: release patched NetBox image revisions"
           body-path: /tmp/autopatch-pr.md
           labels: security,automated
-      - name: Enable automatic merge
-        if: steps.pr.outputs.pull-request-number != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for attempt in 1 2 3; do
-            gh pr merge "${{ steps.pr.outputs.pull-request-number }}" --auto --squash && exit 0
-            [ "$attempt" -eq 3 ] || sleep 10
-          done
-          exit 1
