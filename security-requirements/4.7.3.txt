@@ -1,4 +1,6 @@
 Django>=6.1.1,<6.2
+djangorestframework>=3.18.2
 oauthlib>=4.0.0
 strawberry-graphql>=0.328.0
 graphql-core>=3.3.0,<3.4.0
+Pillow>=13.0.0
