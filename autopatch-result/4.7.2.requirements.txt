@@ -1,6 +1,10 @@
 Django>=6.1.1,<6.2
-oauthlib>=4.0.0
+oauthlib>=4.0.1
 strawberry-graphql>=0.327.2
 graphql-core<3.3
 Pillow>=13.0.0
 djangorestframework>=3.18.2
+pyasn1>=0.6.5
+opentelemetry-api>=1.45.2
+social-auth-core>=6.2.0
+social-auth-app-django>=6.0.0
