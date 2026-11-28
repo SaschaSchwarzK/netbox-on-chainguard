@@ -6,3 +6,6 @@ social-auth-core[all]>=5.0.0
 strawberry-graphql>=0.327.2
 djangorestframework>=3.17.2
 mework>=3.17.2
+graphql-core>=3.3.1
+pyasn1>=0.6.5
+opentelemetry-api>=1.45.2
